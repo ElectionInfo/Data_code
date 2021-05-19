@@ -10,6 +10,7 @@ Original file is located at
 """
 
 !pip install pymysql
+!pip install xmltodict
 
 import json
 import urllib
@@ -22,6 +23,8 @@ import pymysql
 import datetime as dt
 import sklearn
 from sklearn.preprocessing import LabelEncoder
+import json
+import xmltodict
 
 pymysql.install_as_MySQLdb()
 import MySQLdb
@@ -182,6 +185,60 @@ def get_mainpoll_df(sgId, sdName):
   poll_data = pd.json_normalize(json_object['getPolplcOtlnmapTrnsportInfoInqire']['item'])
   return poll_data
 
+"""## Politician dataframe make function
+
+### Current Politician
+"""
+
+def get_curr_politician_mem(numOfRows=1000):
+  curr_politician_base_url = 'http://apis.data.go.kr/9710000/NationalAssemblyInfoService/getMemberCurrStateList'
+
+  queryParams = '?' + urlencode({
+      quote_plus('numOfRows') : numOfRows,
+      quote_plus('resultType') : 'json',   
+      quote_plus('ServiceKey') : service_key
+  })
+
+  API_curr_politician_url = curr_politician_base_url + unquote(queryParams)
+
+  response = urlopen(API_curr_politician_url)
+  json_str = response.read().decode('utf-8')
+  json_str = json.dumps(xmltodict.parse(json_str), indent=4)
+
+  json_object = json.loads(json_str)
+
+  curr_politician_data = pd.json_normalize(json_object['response']['body']['items']['item'])
+
+  return curr_politician_data
+
+get_curr_politician_mem().head()
+
+"""### Member detail"""
+
+def get_politician_detail(dept_code, numOfRows=1000):
+  politician_detail_base_url = 'http://apis.data.go.kr/9710000/NationalAssemblyInfoService/getMemberDetailInfoList'
+
+  queryParams = '?' + urlencode({
+      quote_plus('numOfRows') : numOfRows,
+      quote_plus('dept_cd') : dept_code,
+      quote_plus('resultType') : 'json',   
+      quote_plus('ServiceKey') : service_key
+  })
+
+  API_politician_detail_url = politician_detail_base_url + unquote(queryParams)
+
+  response = urlopen(API_politician_detail_url)
+  json_str = response.read().decode('utf-8')
+  json_str = json.dumps(xmltodict.parse(json_str), indent=4)
+
+  json_object = json.loads(json_str)
+
+  politician_detail_data = pd.json_normalize(json_object['response']['body']['item'])
+
+  return politician_detail_data
+
+get_politician_detail(9771106)
+
 """# DataFrame load test
 
 ## Election code load
@@ -198,8 +255,6 @@ get_candidate_df(20210407, 3).head()
 # 당선인이 나온 후엔 당선인 공약만 확인 가능
 data = get_promise_df(20210407, 3, 100138272)
 data
-
-data['prmmCont1']
 
 """## Poll info load
 
@@ -228,64 +283,140 @@ def election_code_preprocessing():
   return election_code
 
 election_code = election_code_preprocessing()
+
 data = election_code.reset_index()
 
-election_code.head()
+"""## Politician data preprocessing"""
+
+def politician_preprocessing():
+  # current politician data preprocessing
+  curr_data_df = get_curr_politician_mem()
+  curr_data = curr_data_df.drop(['engNm', 'hjNm', 'origNm', 'reeleGbnNm'], axis=1)
+  curr_data.columns = ['deptCode', 'name', 'imageLink', 'num']
+
+  # export dept_code for find detail politician
+  dept_code = curr_data['deptCode'].unique().astype(int)
+
+  # detail politician data preprocessing
+  detail_df = pd.DataFrame()
+
+  for deptCd in dept_code:
+    detail_data = get_politician_detail(deptCd)
+    detail_data['deptCode'] = deptCd
+    detail_df = pd.concat([detail_df, detail_data], ignore_index=True)
+
+  detail_data = detail_df.drop(['assemEmail','assemHomep','assemTel', 'electionNum', 'engNm', 'hjNm', 'reeleGbnNm', 'secretary', 'secretary2', 'shrtNm', 'staff', 'hbbyCd', 'examCd'], axis=1)
+  detail_data.columns = ['birthday', 'name', 'memTitle', 'sggName' , 'partyName', 'deptCode']
+
+  # column type match to database column
+  curr_data = curr_data.astype({'deptCode':int})
+  detail_data = detail_data.astype({'deptCode':int})
+
+  # join the current politician and detail poloitician
+  politician = pd.merge(curr_data, detail_data, how='left', on=['name', 'deptCode'])
+  politician['age'] = dt.datetime.now().year - pd.to_datetime(politician['birthday']).dt.year - 1
+  politician['birthday'] = pd.to_datetime(politician['birthday'], format='%Y-%m-%d')
+  politician.set_index('deptCode', inplace=True)
+
+  return politician
+
+politician = politician_preprocessing()
 
 """## Candidate data preprocessing"""
 
-election_data = data[['sgId', 'sgTypecode']]
-election_data.head()
+def candidate_code_preprocessing():
+  election_code = election_code_preprocessing()
+  data = election_code.reset_index()  
+  election_data = data[['sgId', 'sgTypecode']]
 
-"""### Concat the all candidate df"""
+  candidate_df = pd.DataFrame()
 
-candidate_df = pd.DataFrame()
+  # concat all candidate df
+  for i in range(len(election_data)):
+    curr_id = election_data['sgId'][i]
+    curr_code = election_data['sgTypecode'][i]
+    curr_df = pd.DataFrame()
 
-for i in range(len(election_data)):
-  curr_id = election_data['sgId'][i]
-  curr_code = election_data['sgTypecode'][i]
-  curr_df = pd.DataFrame()
-
-  if curr_code != 0:
-    curr_df = get_candidate_df(curr_id, curr_code)
+    if curr_code != 0:
+      curr_df = get_candidate_df(curr_id, curr_code)
+    
+    candidate_df = pd.concat([candidate_df, curr_df], ignore_index=True)
   
-  candidate_df = pd.concat([candidate_df, curr_df], ignore_index=True)
+  # candidate column change
+  candidate = candidate_df.drop(['NUM', 'GIHO_SANGSE', 'HANJA_NAME', 'JOB_ID', 'EDU_ID', 'EDU', 'CAREER1', 'CAREER2', 'partyName', 'AGE'], axis=1)
+  candidate.columns = ['sgId', 'sgTypecode', 'cnddtId', 'sggName', 'sdName', 'wiwName', 'giho', 'name', 'gender', 'birthday','address', 'job', 'status']
 
-cand_age = candidate_df['AGE']
-candidate = candidate_df.drop(['NUM', 'GIHO_SANGSE', 'HANJA_NAME', 'JOB_ID', 'EDU_ID', 'EDU', 'CAREER1', 'CAREER2', 'partyName', 'AGE'], axis=1)
+  # encoding data
+  le = LabelEncoder()
 
-candidate.columns = ['sgId', 'sgTypecode', 'cnddtId', 'sggName', 'sdName', 'wiwName', 'giho', 'name', 'gender', 'birthday','address', 'job', 'status']
+  for category in ['gender', 'status']:
+    candidate[category] = le.fit_transform(candidate[category])
 
-candidate.tail()
+  # giho null value
+  candidate[candidate['giho'] == ''] = 1
 
-le = LabelEncoder()
+  # type matchin to sql column type
+  candidate = candidate.astype({'sgId':int, 'sgTypecode':int, 'cnddtId':int, 'gender':int, 'status':int, 'giho':int})
+  candidate['birthday'] = pd.to_datetime(candidate['birthday'], format='%Y-%m-%d')
+  candidate.set_index('cnddtId', inplace=True)
 
-for category in ['gender', 'status']:
-  candidate[category] = le.fit_transform(candidate[category])
+  return candidate
 
-candidate.tail()
-
-"""encoding the gender data 0 / 1"""
-
-candidate[candidate['giho'] == ''] = 1
-
-"""giho null value processing"""
-
-candidate = candidate.astype({'sgId':int, 'sgTypecode':int, 'cnddtId':int, 'gender':int, 'status':int, 'giho':int})
-candidate.set_index('sgId', inplace=True)
-
-candidate.reset_index()
-
-candidate.head()
+candidate = candidate_code_preprocessing()
 
 """## Polls data preprocessing
 
 ### pre_polls data preprocessing
-
-### main_polls data preprocessing
 """
 
+def pre_poll_preprocessing():
+  sdarr = candidate['sdName'].unique()
+  datearr = election_code['sgVotedate'].unique()
+  
+  total = pd.DataFrame()
+  for dt in datearr:
+    for sd in sdarr:
+      try:
+        cur = get_prepoll_df(dt, sd)
+        total = pd.concat([total, cur], ignore_index=True)
+      except:
+        print(sd, 'no propoll at', dt)
+  
+  total.drop(['NUM'], axis=1, inplace=True)
+  total.columns = ['sgId', 'evPsName', 'sdName', 'wiwName', 'emdName', 'evOrder', 'placeName','address', 'floor']  
+  total = total.astype({'sgId':int, 'evOrder':int})
+  total.set_index('sgId', inplace=True)
+  
+  return total
 
+pre_poll = pre_poll_preprocessing()
+pre_poll.head()
+
+"""### main_polls data preprocessing"""
+
+def main_poll_preprocessing():
+  sdarr = candidate['sdName'].unique()
+  datearr = election_code['sgVotedate'].unique()
+
+  total = pd.DataFrame()
+  for dt in datearr:
+    for sd in sdarr:
+      try:
+        cur = get_mainpoll_df(dt, sd)
+        total = pd.concat([total, cur], ignore_index=True)
+      except:
+        print(sd, 'no mainpoll at', dt)
+      
+  total.drop(['NUM'], axis=1, inplace=True)
+  total.columns = ['sgId', 'PsName', 'sdName', 'wiwName', 'emdName', 'placeName','address', 'floor']  
+  total = total.astype({'sgId':int})
+  total.set_index('sgId', inplace=True)
+  
+  return total
+
+main_poll = main_poll_preprocessing()
+
+main_poll.head()
 
 """# MySQL link to GCP
 
@@ -399,6 +530,18 @@ create_promise = """CREATE TABLE promise (
 
 election_code.to_sql(name='election_code', con=engine, if_exists='append')
 
+"""### Politician insert"""
+
+politician.to_sql(name='politician', con=engine, if_exists='append')
+
 """### candidate insert"""
 
-candidate.to_sql(name='candidate')
+candidate.to_sql(name='candidate', con=engine, if_exists='append')
+
+"""### pre_poll insert"""
+
+pre_poll.to_sql(name='pre_poll', con=engine, if_exists='append')
+
+"""### main_poll insert"""
+
+main_poll.to_sql(name='main_poll', con=engine, if_exists='append')
