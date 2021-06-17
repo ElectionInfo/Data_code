@@ -11,6 +11,7 @@ Original file is located at
 
 !pip install pymysql
 !pip install xmltodict
+!pip install cryptography
 
 import json
 import urllib
@@ -26,6 +27,7 @@ from sklearn.preprocessing import LabelEncoder
 import json
 import xmltodict
 import multiprocessing as mp
+import cryptography
 
 pymysql.install_as_MySQLdb()
 import MySQLdb
@@ -281,7 +283,7 @@ get_election_df().head()
 
 """## Cadidate info load"""
 
-get_candidate_df(20210407, 3).head()
+get_candidate_df(20160413, 2)['STATUS'].unique()
 
 """## Promise load"""
 
@@ -316,6 +318,8 @@ def election_code_preprocessing():
   return election_code
 
 election_code = election_code_preprocessing()
+
+election_code.head()
 
 election_df = election_code.reset_index()
 
@@ -355,6 +359,8 @@ def politician_preprocessing():
 
 politician = politician_preprocessing()
 
+len(politician)
+
 """## Candidate data preprocessing"""
 
 def candidate_code_preprocessing():
@@ -376,8 +382,8 @@ def candidate_code_preprocessing():
     candidate_df = pd.concat([candidate_df, curr_df], ignore_index=True)
   
   # candidate column change
-  candidate = candidate_df.drop(['NUM', 'GIHO_SANGSE', 'HANJA_NAME', 'JOB_ID', 'EDU_ID', 'EDU', 'CAREER1', 'CAREER2', 'partyName', 'AGE'], axis=1)
-  candidate.columns = ['sgId', 'sgTypecode', 'cnddtId', 'sggName', 'sdName', 'wiwName', 'giho', 'name', 'gender', 'birthday','address', 'job', 'status']
+  candidate = candidate_df.drop(['NUM', 'GIHO_SANGSE', 'HANJA_NAME', 'JOB_ID', 'EDU_ID', 'EDU', 'CAREER1', 'CAREER2', 'AGE'], axis=1)
+  candidate.columns = ['sgId', 'sgTypecode', 'cnddtId', 'sggName', 'sdName', 'wiwName', 'giho', 'partyName', 'name', 'gender', 'birthday','address', 'job', 'status']
 
   # encoding data
   le = LabelEncoder()
@@ -399,6 +405,10 @@ def candidate_code_preprocessing():
   return candidate
 
 candidate = candidate_code_preprocessing()
+
+candidate.head()
+
+candidate[candidate['status'] == 1]
 
 """## Polls data preprocessing
 
@@ -428,6 +438,8 @@ def pre_poll_preprocessing():
 pre_poll = pre_poll_preprocessing()
 pre_poll.head()
 
+pre_poll[pre_poll['evPsName'] == '동명동사전투표소']
+
 """### main_polls data preprocessing"""
 
 def main_poll_preprocessing():
@@ -453,6 +465,8 @@ def main_poll_preprocessing():
 main_poll = main_poll_preprocessing()
 
 main_poll.head()
+
+main_poll[main_poll['placeName'] == '전천후 게이트볼장 (1층)']
 
 """## Promise data preprocessing
 
@@ -572,11 +586,15 @@ connection
 ## CREATE TABLE
 """
 
+cursor = conn.cursor()
+
+cursor
+
 create_election_code = """CREATE TABLE election_code (  
     sgId INT NOT NULL,
     sgTypecode INT NOT NULL,
-    sgName INT NOT NULL,
-    sgVotedate TIMESTAMP NOT NULL,
+    sgName VARCHAR(50) NOT NULL,
+    sgVotedate DATETIME NOT NULL,
     PRIMARY KEY (sgId, sgTypecode)
 ) default charset utf8;"""
 
@@ -589,8 +607,8 @@ create_pre_polls = """CREATE TABLE pre_polls (
     evPsName VARCHAR(80) NOT NULL ,
     placeName VARCHAR(100) NOT NULL ,
     `address` VARCHAR(150) NOT NULL ,
-    `floor` INT NOT NULL ,
-    PRIMARY KEY(evPsName) ,
+    `floor` VARCHAR(20) NOT NULL ,
+    PRIMARY KEY(sgId, evPsName, placeName) ,
     FOREIGN KEY(sgId) REFERENCES election_code(sgId)
 ) default charset utf8;"""
 
@@ -602,10 +620,12 @@ create_main_polls = """CREATE TABLE main_polls (
     PsName VARCHAR(80) NOT NULL ,
     placeName VARCHAR(100) NOT NULL ,
     `address` VARCHAR(150) NOT NULL ,
-    `floor` INT NOT NULL ,
-    PRIMARY KEY(PsName) ,
+    `floor` VARCHAR(20) NOT NULL ,
+    PRIMARY KEY(sgId, PsName, placeName) ,
     FOREIGN KEY(sgId) REFERENCES election_code(sgId)
 ) default charset utf8;"""
+
+politician.head()
 
 create_politician = """CREATE TABLE politician (
     num INT NOT NULL ,
@@ -614,38 +634,39 @@ create_politician = """CREATE TABLE politician (
     sggName VARCHAR(35) NOT NULL ,
     deptCode INT NOT NULL ,
     memTitle LONGTEXT ,
-    birthday TIMESTAMP NOT NULL ,
+    birthday DATETIME NOT NULL ,
+    partyName VARCHAR(50),
     age INT NOT NULL ,
     PRIMARY KEY (num)
 ) default charset utf8;"""
 
+candidate.head()
+
 create_candidate = """CREATE TABLE candidate (
     cnddtId INT NOT NULL ,
-    num INT NOT NULL ,
     sgId INT NOT NULL ,
     sgTypecode INT NOT NULL ,
     sggName VARCHAR(35) NOT NULL ,
     sdName VARCHAR(30) NOT NULL ,
     wiwName VARCHAR(30) NOT NULL ,
     giho INT NOT NULL ,
+    partyName VARCHAR(50),
     `name` VARCHAR(20) NOT NULL ,
     gender TINYINT NOT NULL ,
     `address` VARCHAR(100) ,
     job VARCHAR(100) ,
     `status` TINYINT NOT NULL ,
-    birthday TIMESTAMP NOT NULL ,
+    birthday DATETIME NOT NULL ,
     PRIMARY KEY (cnddtId),
-    FOREIGN KEY (num) REFERENCES politician (num),
     FOREIGN KEY (sgId, sgTypecode) REFERENCES election_code (sgId, sgTypecode)
 ) default charset utf8;"""
 
 create_promise = """CREATE TABLE promise (
-    prmIdx INT AUTO_INCREMENT NOT NULL ,
     cnddtId INT NOT NULL ,
-    prmOrd INT ,
+    prmOrd INT NOT NULL,
     prmTitle VARCHAR(100) ,
     prmCont LONGTEXT,
-    PRIMARY KEY (prmIdx),
+    PRIMARY KEY (cnddtId, prmOrd),
     FOREIGN KEY (cnddtId) REFERENCES candidate (cnddtId)
 );"""
 
@@ -653,6 +674,18 @@ create_promise = """CREATE TABLE promise (
 
 ### election_code insert
 """
+
+cursor.execute(create_election_code)
+
+cursor.execute(create_pre_polls)
+
+cursor.execute(create_main_polls)
+
+cursor.execute(create_politician)
+
+cursor.execute(create_candidate)
+
+cursor.execute(create_promise)
 
 election_code.to_sql(name='election_code', con=engine, if_exists='append')
 
@@ -666,11 +699,11 @@ candidate.to_sql(name='candidate', con=engine, if_exists='append')
 
 """### pre_poll insert"""
 
-pre_poll.to_sql(name='pre_poll', con=engine, if_exists='append')
+pre_poll.to_sql(name='pre_polls', con=engine, if_exists='append')
 
 """### main_poll insert"""
 
-main_poll.to_sql(name='main_poll', con=engine, if_exists='append')
+main_poll.to_sql(name='main_polls', con=engine, if_exists='append')
 
 """### promise insert"""
 
